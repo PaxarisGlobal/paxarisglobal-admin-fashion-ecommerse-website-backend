@@ -1,0 +1,86 @@
+name: Build Push And GitOps Update (Backend)
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-update:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set image variables
+        id: vars
+        run: |
+          IMAGE_REPO="devopspaxarisglobalrepo/paxarisglobal-admin-stylehub-backend"
+          IMAGE_TAG="${GITHUB_SHA}"
+          echo "image_repo=$IMAGE_REPO" >> "$GITHUB_OUTPUT"
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve build paths
+        id: paths
+        run: |
+          if [ -f "backend/Dockerfile" ]; then
+            echo "context=./backend" >> "$GITHUB_OUTPUT"
+            echo "dockerfile=./backend/Dockerfile" >> "$GITHUB_OUTPUT"
+          else
+            echo "context=." >> "$GITHUB_OUTPUT"
+            echo "dockerfile=./Dockerfile" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN || vars.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ steps.paths.outputs.context }}
+          file: ${{ steps.paths.outputs.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.vars.outputs.image_repo }}:latest
+            ${{ steps.vars.outputs.image_repo }}:${{ steps.vars.outputs.image_tag }}
+
+      - name: Update k8 image tag
+        run: |
+          if [ -f "k8/deployment.yaml" ]; then
+            DEPLOYMENT_FILE="k8/deployment.yaml"
+          elif [ -f "backend/k8/deployment.yaml" ]; then
+            DEPLOYMENT_FILE="backend/k8/deployment.yaml"
+          else
+            echo "Missing k8/deployment.yaml"
+            exit 1
+          fi
+          sed -E -i.bak "s|^([[:space:]]*)image:[[:space:]].*|\1image: ${{ steps.vars.outputs.image_repo }}:${{ steps.vars.outputs.image_tag }}|" "$DEPLOYMENT_FILE"
+          rm -f "$DEPLOYMENT_FILE.bak"
+          echo "deployment_file=$DEPLOYMENT_FILE" >> "$GITHUB_ENV"
+
+      - name: Commit and push manifest changes
+        run: |
+          if git diff --quiet; then
+            echo "No manifest changes to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$deployment_file"
+          git commit -m "ci: update image tag [skip ci]"
+          git push

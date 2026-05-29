@@ -1,0 +1,4 @@
+# Docker / postgres profile: reach Paxaris on the host machine
+stylehub:
+  paxaris:
+    gateway-url: ${PAXARIS_GATEWAY_URL:http://host.docker.internal:8085}
